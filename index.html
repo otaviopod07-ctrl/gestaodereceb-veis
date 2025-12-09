@@ -1378,7 +1378,7 @@
                         </div>
                         <div class="form-group">
                             <label class="form-label">Prazo (dias)</label>
-                            <input type="number" class="form-input" id="prazo-pagamento" placeholder="30" min="0"
+                            <input type="text" class="form-input" id="prazo-pagamento" placeholder="Ex: 30 60 90"
                                 required>
                         </div>
                     </div>
@@ -1408,485 +1408,572 @@
     <!-- TOAST CONTAINER -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script>
-        // ========================================
-        // DATA MANAGEMENT
-        // ========================================
-        const STORAGE_KEY = 'gestao_recebiveis_v2';
-        let chartInstance = null;
+    // ========================================
+    // NOTIFICATIONS
+    // ========================================
+    const verificarAlertas = () => {
+    const pedidos = carregarPedidos();
+    const hoje = new Date();
+    const DIAS_ALERTA = 5;
 
-        const MESES = {
-            '01': 'Janeiro', '02': 'Fevereiro', '03': 'Março', '04': 'Abril',
-            '05': 'Maio', '06': 'Junho', '07': 'Julho', '08': 'Agosto',
-            '09': 'Setembro', '10': 'Outubro', '11': 'Novembro', '12': 'Dezembro'
+    pedidos.forEach(p => {
+    const parcelas = calcularParcelas(p.valorTotal, p.percentualComissao, p.dataEmissao, p.prazoPagamento);
+
+    parcelas.forEach(parcela => {
+    const diffTime = parcela.data - hoje;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays >= 0 && diffDays <= DIAS_ALERTA) { const msg=parcelas.length> 1
+        ? `⚠️ Pedido ${p.numeroNota} (Parc. ${parcela.numero}/${parcela.totalParcelas}) vence em breve
+        (${parcela.data.toLocaleDateString('pt-BR')})`
+        : `⚠️ Pedido ${p.numeroNota} está próximo da data de recebimento (${parcela.data.toLocaleDateString('pt-BR')})`;
+
+        mostrarToast(msg, 'info');
+        }
+        });
+        });
+        };
+        '01': 'Janeiro', '02': 'Fevereiro', '03': 'Março', '04': 'Abril',
+        '05': 'Maio', '06': 'Junho', '07': 'Julho', '08': 'Agosto',
+        '09': 'Setembro', '10': 'Outubro', '11': 'Novembro', '12': 'Dezembro'
         };
 
         const carregarPedidos = () => {
-            const dados = localStorage.getItem(STORAGE_KEY);
-            return dados ? JSON.parse(dados) : [];
+        const dados = localStorage.getItem(STORAGE_KEY);
+        return dados ? JSON.parse(dados) : [];
         };
 
         const salvarPedidos = (pedidos) => {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(pedidos));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(pedidos));
         };
 
         const formatarMoeda = (valor) => {
-            return valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-        };
-
-        const calcularDataRecebimento = (dataEmissao, prazo) => {
-            const data = new Date(dataEmissao + 'T00:00:00');
-            data.setDate(data.getDate() + parseInt(prazo));
-            return data;
+        return valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
         };
 
         const getMesAno = (data) => {
-            const mes = String(data.getMonth() + 1).padStart(2, '0');
-            const ano = data.getFullYear();
-            return `${mes}/${ano}`;
+        const mes = String(data.getMonth() + 1).padStart(2, '0');
+        const ano = data.getFullYear();
+        return `${mes}/${ano}`;
         };
+
+        // ========================================
+        // LOGIC: MULTI-INSTALLMENTS
+        // ========================================
+        const calcularParcelas = (valorTotal, percentual, dataEmissao, textoPrazos) => {
+        // Converts input "30/60/90" or "30 60 90" into array [30, 60, 90]
+        const prazos = textoPrazos.toString().split(/[\s,/;]+/).map(p => parseInt(p.trim())).filter(p => !isNaN(p));
+        // Default to 1 installment of 0 days if invalid
+        if (prazos.length === 0) prazos.push(0);
+
+        const comissaoTotal = valorTotal * percentual / 100;
+        const valorPorParcela = comissaoTotal / prazos.length;
+
+        return prazos.map((dias, index) => {
+        const data = new Date(dataEmissao + 'T00:00:00');
+        data.setDate(data.getDate() + dias);
+        return {
+        numero: index + 1,
+        totalParcelas: prazos.length,
+        data: data,
+        valor: valorPorParcela
+        };
+        });
+        };
+
+        const processarPedidosParaFluxo = (pedidos) => {
+        const fluxo = {};
+        pedidos.forEach(pedido => {
+        const parcelas = calcularParcelas(
+        pedido.valorTotal,
+        pedido.percentualComissao,
+        pedido.dataEmissao,
+        pedido.prazoPagamento
+        );
+
+        parcelas.forEach(parcela => {
+        const mesAno = getMesAno(parcela.data);
+        if (!fluxo[mesAno]) fluxo[mesAno] = { total: 0, qtd: 0 };
+        fluxo[mesAno].total += parcela.valor;
+        fluxo[mesAno].qtd++;
+        });
+        });
+        return fluxo;
+        };
+
+
 
         // ========================================
         // FILTER LOGIC
         // ========================================
         const aplicarFiltros = () => {
-            const busca = document.getElementById('busca-input').value.toLowerCase();
-            const dataInicio = document.getElementById('data-inicio').value;
-            const dataFim = document.getElementById('data-fim').value;
-            const status = document.getElementById('filtro-status').value;
+        const busca = document.getElementById('busca-input').value.toLowerCase();
+        const dataInicio = document.getElementById('data-inicio').value;
+        const dataFim = document.getElementById('data-fim').value;
+        const status = document.getElementById('filtro-status').value;
 
-            let pedidos = carregarPedidos();
+        let pedidos = carregarPedidos();
 
-            // Filter by Search (Note or Client)
-            if (busca) {
-                pedidos = pedidos.filter(p =>
-                    p.numeroNota.toLowerCase().includes(busca) ||
-                    p.cliente.toLowerCase().includes(busca)
-                );
-            }
+        // Filter by Search (Note or Client)
+        if (busca) {
+        pedidos = pedidos.filter(p =>
+        p.numeroNota.toLowerCase().includes(busca) ||
+        p.cliente.toLowerCase().includes(busca)
+        );
+        }
 
-            // Filter by Date Range (Receipt Date)
-            if (dataInicio || dataFim) {
-                pedidos = pedidos.filter(p => {
-                    const dataReceb = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
-                    const dataRecebStr = dataReceb.toISOString().split('T')[0];
+        // Filter by Date Range (Receipt Date)
+        if (dataInicio || dataFim) {
+        pedidos = pedidos.filter(p => {
+        const dataReceb = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
+        const dataRecebStr = dataReceb.toISOString().split('T')[0];
 
-                    if (dataInicio && dataRecebStr < dataInicio) return false;
-                    if (dataFim && dataRecebStr > dataFim) return false;
-                    return true;
-                });
+        if (dataInicio && dataRecebStr < dataInicio) return false; if (dataFim && dataRecebStr> dataFim) return false;
+            return true;
+            });
             }
 
             // Filter by Status
             if (status !== 'todos') {
-                const hoje = new Date();
-                hoje.setHours(0, 0, 0, 0);
-
-                pedidos = pedidos.filter(p => {
-                    const dataReceb = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
-                    dataReceb.setHours(0, 0, 0, 0);
-
-                    if (status === 'a_receber') return dataReceb >= hoje; // Future or Today
-                    if (status === 'atrasados') return dataReceb < hoje;  // Past
-                    if (status === 'pagos') return false; // Not implemented yet
-                    return true;
-                });
-            }
-
-            atualizarTabela(pedidos);
-        };
-
-        const limparFiltros = () => {
-            document.getElementById('busca-input').value = '';
-            document.getElementById('data-inicio').value = '';
-            document.getElementById('data-fim').value = '';
-            document.getElementById('filtro-status').value = 'todos';
-            aplicarFiltros();
-        };
-
-        // ========================================
-        // UI UPDATES
-        // ========================================
-        const atualizarInterface = () => {
-            const pedidos = carregarPedidos();
-            atualizarEstatisticas(pedidos);
-            aplicarFiltros(); // Updates table with filters
-            atualizarFluxoCaixa(pedidos);
-            verificarAlertas();
-        };
-
-        // ========================================
-        // NOTIFICATIONS FOR UPCOMING PAYMENTS
-        // ========================================
-        const DIAS_ALERTA = 5;
-        const verificarAlertas = () => {
-            const pedidos = carregarPedidos();
             const hoje = new Date();
-            pedidos.forEach(p => {
+            hoje.setHours(0, 0, 0, 0);
+
+            pedidos = pedidos.filter(p => {
+            const dataReceb = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
+            dataReceb.setHours(0, 0, 0, 0);
+
+            if (status === 'a_receber') return dataReceb >= hoje; // Future or Today
+            if (status === 'atrasados') return dataReceb < hoje; // Past if (status==='pagos' ) return false; // Not
+                implemented yet return true; }); } atualizarTabela(pedidos); }; const limparFiltros=()=> {
+                document.getElementById('busca-input').value = '';
+                document.getElementById('data-inicio').value = '';
+                document.getElementById('data-fim').value = '';
+                document.getElementById('filtro-status').value = 'todos';
+                aplicarFiltros();
+                };
+
+                // ========================================
+                // UI UPDATES
+                // ========================================
+                const atualizarInterface = () => {
+                const pedidos = carregarPedidos();
+                atualizarEstatisticas(pedidos);
+                aplicarFiltros(); // Updates table with filters
+                atualizarFluxoCaixa(pedidos);
+                verificarAlertas();
+                };
+
+                // ========================================
+                // NOTIFICATIONS FOR UPCOMING PAYMENTS
+                // ========================================
+                const DIAS_ALERTA = 5;
+                const verificarAlertas = () => {
+                const pedidos = carregarPedidos();
+                const hoje = new Date();
+                pedidos.forEach(p => {
                 const dataReceb = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
                 const diffTime = dataReceb - hoje;
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                if (diffDays >= 0 && diffDays <= DIAS_ALERTA) {
-                    mostrarToast(`⚠️ Pedido ${p.numeroNota} está próximo da data de recebimento (${dataReceb.toLocaleDateString('pt-BR')})`, 'info');
-                }
-            });
-        };
+                if (diffDays >= 0 && diffDays <= DIAS_ALERTA) { mostrarToast(`⚠️ Pedido ${p.numeroNota} está próximo da
+                    data de recebimento (${dataReceb.toLocaleDateString('pt-BR')})`, 'info' ); } }); }; const
+                    atualizarEstatisticas=(pedidos)=> {
+                    const totalVendas = pedidos.reduce((sum, p) => sum + p.valorTotal, 0);
+                    const totalComissoes = pedidos.reduce((sum, p) => sum + (p.valorTotal * p.percentualComissao / 100),
+                    0);
+                    const media = pedidos.length > 0 ? totalVendas / pedidos.length : 0;
 
-        const atualizarEstatisticas = (pedidos) => {
-            const totalVendas = pedidos.reduce((sum, p) => sum + p.valorTotal, 0);
-            const totalComissoes = pedidos.reduce((sum, p) => sum + (p.valorTotal * p.percentualComissao / 100), 0);
-            const media = pedidos.length > 0 ? totalVendas / pedidos.length : 0;
+                    document.getElementById('stat-pedidos').textContent = pedidos.length;
+                    document.getElementById('stat-vendas').textContent = formatarMoeda(totalVendas);
+                    document.getElementById('stat-comissoes').textContent = formatarMoeda(totalComissoes);
+                    document.getElementById('stat-media').textContent = formatarMoeda(media);
+                    document.getElementById('count-pedidos').textContent = `${pedidos.length} pedido${pedidos.length !==
+                    1 ? 's' : ''}`;
+                    };
 
-            document.getElementById('stat-pedidos').textContent = pedidos.length;
-            document.getElementById('stat-vendas').textContent = formatarMoeda(totalVendas);
-            document.getElementById('stat-comissoes').textContent = formatarMoeda(totalComissoes);
-            document.getElementById('stat-media').textContent = formatarMoeda(media);
-            document.getElementById('count-pedidos').textContent = `${pedidos.length} pedido${pedidos.length !== 1 ? 's' : ''}`;
-        };
+                    const atualizarTabela = (pedidos) => {
+                    const tbody = document.getElementById('tabela-pedidos');
+                    const emptyState = document.getElementById('empty-state');
 
-        const atualizarTabela = (pedidos) => {
-            const tbody = document.getElementById('tabela-pedidos');
-            const emptyState = document.getElementById('empty-state');
+                    if (pedidos.length === 0) {
+                    tbody.innerHTML = '';
+                    emptyState.style.display = 'block';
+                    return;
+                    }
 
-            if (pedidos.length === 0) {
-                tbody.innerHTML = '';
-                emptyState.style.display = 'block';
-                return;
-            }
+                    emptyState.style.display = 'none';
 
-            emptyState.style.display = 'none';
+                    const pedidosOrdenados = [...pedidos].sort((a, b) => {
+                    const dataA = calcularDataRecebimento(a.dataEmissao, a.prazoPagamento);
+                    const dataB = calcularDataRecebimento(b.dataEmissao, b.prazoPagamento);
+                    return dataA - dataB;
+                    });
 
-            const pedidosOrdenados = [...pedidos].sort((a, b) => {
-                const dataA = calcularDataRecebimento(a.dataEmissao, a.prazoPagamento);
-                const dataB = calcularDataRecebimento(b.dataEmissao, b.prazoPagamento);
-                return dataA - dataB;
-            });
+                    tbody.innerHTML = pedidosOrdenados.map(pedido => {
+                    const comissao = pedido.valorTotal * pedido.percentualComissao / 100;
+                    // Calculate installments just for display or sorting
+                    const parcelas = calcularParcelas(pedido.valorTotal, pedido.percentualComissao, pedido.dataEmissao,
+                    pedido.prazoPagamento);
 
-            tbody.innerHTML = pedidosOrdenados.map(pedido => {
-                const comissao = pedido.valorTotal * pedido.percentualComissao / 100;
-                const dataRecebimento = calcularDataRecebimento(pedido.dataEmissao, pedido.prazoPagamento);
+                    // Format receipt date column
+                    let dataRecebimentoHtml = '';
+                    if (parcelas.length === 1) {
+                    dataRecebimentoHtml = parcelas[0].data.toLocaleDateString('pt-BR');
+                    } else {
+                    dataRecebimentoHtml = `<div class="tooltip-trigger"
+                        title="${parcelas.map(p => `${p.numero}ª: ${p.data.toLocaleDateString('pt-BR')} (${formatarMoeda(p.valor)})`).join('\n')}">
+                        ${parcelas.length} parcelas <small>(${parcelas[0].data.toLocaleDateString('pt-BR')} ...)</small>
+                    </div>`;
+                    }
 
-                return `
+                    return `
                     <tr>
                         <td class="td-primary" data-label="Nota">${pedido.numeroNota}</td>
                         <td data-label="Cliente">${pedido.cliente}</td>
                         <td class="td-money" data-label="Valor">${formatarMoeda(pedido.valorTotal)}</td>
                         <td class="td-money" data-label="Comissão">${formatarMoeda(comissao)}</td>
-                        <td class="td-date" data-label="Recebimento">${dataRecebimento.toLocaleDateString('pt-BR')}</td>
+                        <td class="td-date" data-label="Recebimento">${dataRecebimentoHtml}</td>
                         <td>
                             <button class="btn-delete" onclick="removerPedido('${pedido.numeroNota}')" title="Remover">
                                 🗑️
                             </button>
                         </td>
                     </tr>
-                `;
-            }).join('');
-        };
+                    `;
+                    }).join('');
+                    };
 
-        const atualizarFluxoCaixa = (pedidos) => {
-            const ctx = document.getElementById('fluxo-chart');
-            if (!ctx) return;
+                    const atualizarFluxoCaixa = (pedidos) => {
+                    const ctx = document.getElementById('fluxo-chart');
+                    if (!ctx) return;
 
-            // Group data
-            const fluxo = {};
-            pedidos.forEach(pedido => {
-                const dataRecebimento = calcularDataRecebimento(pedido.dataEmissao, pedido.prazoPagamento);
-                const mesAno = getMesAno(dataRecebimento);
-                const comissao = pedido.valorTotal * pedido.percentualComissao / 100;
+                    // Group data using multi-installment logic
+                    const fluxo = processarPedidosParaFluxo(pedidos);
 
-                if (!fluxo[mesAno]) fluxo[mesAno] = 0;
-                fluxo[mesAno] += comissao;
-            });
-
-            // Sort months
-            const labels = Object.keys(fluxo).sort((a, b) => {
-                const [mesA, anoA] = a.split('/');
-                const [mesB, anoB] = b.split('/');
-                return new Date(anoA, mesA - 1) - new Date(anoB, mesB - 1);
-            });
-
-            const data = labels.map(label => fluxo[label]);
-
-            // Formatter for tooltips
-            const formatCurrency = (value) => {
-                return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-            };
-
-            // Destroy previous instance
-            if (chartInstance) {
-                chartInstance.destroy();
-            }
-
-            // Create new Chart
-            chartInstance = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'Comissões Previstas',
-                        data: data,
-                        backgroundColor: '#6366f1',
-                        borderRadius: 6,
-                        hoverBackgroundColor: '#818cf8'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            display: false
-                        },
-                        tooltip: {
-                            backgroundColor: '#1e1e2a',
-                            titleColor: '#ffffff',
-                            bodyColor: '#cbd5e1',
-                            borderColor: 'rgba(255, 255, 255, 0.1)',
-                            borderWidth: 1,
-                            padding: 10,
-                            callbacks: {
-                                label: function (context) {
-                                    return formatCurrency(context.raw);
-                                }
-                            }
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: {
-                                color: 'rgba(255, 255, 255, 0.05)'
-                            },
-                            ticks: {
-                                color: '#94a3b8',
-                                callback: function (value) {
-                                    return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumSignificantDigits: 3 });
-                                }
-                            }
-                        },
-                        x: {
-                            grid: {
-                                display: false
-                            },
-                            ticks: {
-                                color: '#94a3b8'
-                            }
-                        }
-                    }
-                }
-            });
-        };
-
-        // ========================================
-        // MODAL
-        // ========================================
-        const abrirModal = () => {
-            document.getElementById('modal-overlay').classList.add('active');
-            document.getElementById('form-pedido').reset();
-            document.getElementById('data-emissao').valueAsDate = new Date();
-            setTimeout(() => document.getElementById('numero-nota').focus(), 100);
-        };
-
-        const fecharModal = () => {
-            document.getElementById('modal-overlay').classList.remove('active');
-        };
-
-        document.getElementById('modal-overlay').addEventListener('click', (e) => {
-            if (e.target.id === 'modal-overlay') fecharModal();
-        });
-
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') fecharModal();
-        });
-
-        // Filter Event Listeners
-        document.getElementById('busca-input').addEventListener('input', aplicarFiltros);
-        document.getElementById('data-inicio').addEventListener('change', aplicarFiltros);
-        document.getElementById('data-fim').addEventListener('change', aplicarFiltros);
-        document.getElementById('filtro-status').addEventListener('change', aplicarFiltros);
-
-        // ========================================
-        // MOBILE MENU
-        // ========================================
-        const toggleSidebar = () => {
-            const sidebar = document.querySelector('.sidebar');
-            const overlay = document.querySelector('.sidebar-overlay');
-            sidebar.classList.toggle('active');
-            overlay.classList.toggle('active');
-        };
-
-        // Close sidebar when clicking a nav item on mobile
-        document.querySelectorAll('.nav-item').forEach(item => {
-            item.addEventListener('click', () => {
-                if (window.innerWidth <= 768) {
-                    toggleSidebar();
-                }
-            });
-        });
-
-        // ========================================
-        // CRUD OPERATIONS
-        // ========================================
-        const salvarPedido = (event) => {
-            event.preventDefault();
-
-            const pedido = {
-                numeroNota: document.getElementById('numero-nota').value.trim(),
-                cliente: document.getElementById('cliente').value.trim(),
-                dataEmissao: document.getElementById('data-emissao').value,
-                prazoPagamento: parseInt(document.getElementById('prazo-pagamento').value),
-                valorTotal: parseFloat(document.getElementById('valor-total').value),
-                percentualComissao: parseFloat(document.getElementById('percentual-comissao').value)
-            };
-
-            const pedidos = carregarPedidos();
-
-            if (pedidos.some(p => p.numeroNota === pedido.numeroNota)) {
-                mostrarToast(`Nota ${pedido.numeroNota} já existe`, 'error');
-                return;
-            }
-
-            pedidos.push(pedido);
-            salvarPedidos(pedidos);
-            atualizarInterface();
-            fecharModal();
-            mostrarToast('Pedido cadastrado com sucesso!', 'success');
-        };
-
-        const removerPedido = (numeroNota) => {
-            if (!confirm(`Remover pedido ${numeroNota}?`)) return;
-
-            const pedidos = carregarPedidos().filter(p => p.numeroNota !== numeroNota);
-            salvarPedidos(pedidos);
-            atualizarInterface();
-            mostrarToast('Pedido removido', 'success');
-        };
-
-        // ========================================
-        // EXPORT
-        // ========================================
-        const exportarExcel = () => {
-            const pedidos = carregarPedidos();
-
-            if (pedidos.length === 0) {
-                mostrarToast('Não há pedidos para exportar', 'error');
-                return;
-            }
-
-            const dadosPedidos = pedidos.map(p => {
-                const comissao = p.valorTotal * p.percentualComissao / 100;
-                const dataRecebimento = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
-
-                return {
-                    'Nº Nota': p.numeroNota,
-                    'Cliente': p.cliente,
-                    'Data Emissão': new Date(p.dataEmissao + 'T00:00:00').toLocaleDateString('pt-BR'),
-                    'Valor Total': p.valorTotal,
-                    'Comissão (%)': p.percentualComissao,
-                    'Valor Comissão': comissao,
-                    'Prazo (dias)': p.prazoPagamento,
-                    'Data Recebimento': dataRecebimento.toLocaleDateString('pt-BR')
-                };
-            });
-
-            const fluxo = {};
-            pedidos.forEach(p => {
-                const dataRecebimento = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
-                const mesAno = getMesAno(dataRecebimento);
-                const comissao = p.valorTotal * p.percentualComissao / 100;
-                if (!fluxo[mesAno]) fluxo[mesAno] = { total: 0, qtd: 0 };
-                fluxo[mesAno].total += comissao;
-                fluxo[mesAno].qtd++;
-            });
-
-            const dadosFluxo = Object.entries(fluxo)
-                .sort(([a], [b]) => {
+                    // Sort months
+                    const labels = Object.keys(fluxo).sort((a, b) => {
                     const [mesA, anoA] = a.split('/');
                     const [mesB, anoB] = b.split('/');
                     return new Date(anoA, mesA - 1) - new Date(anoB, mesB - 1);
-                })
-                .map(([mesAno, dados]) => {
+                    });
+
+                    const data = labels.map(label => fluxo[label].total);
+
+                    // Formatter for tooltips
+                    const formatCurrency = (value) => {
+                    return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+                    };
+
+                    // Destroy previous instance
+                    if (chartInstance) {
+                    chartInstance.destroy();
+                    }
+
+                    // Create new Chart
+                    chartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                    labels: labels,
+                    datasets: [{
+                    label: 'Comissões Previstas',
+                    data: data,
+                    backgroundColor: '#6366f1',
+                    borderRadius: 6,
+                    hoverBackgroundColor: '#818cf8'
+                    }]
+                    },
+                    options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                    legend: {
+                    display: false
+                    },
+                    tooltip: {
+                    backgroundColor: '#1e1e2a',
+                    titleColor: '#ffffff',
+                    bodyColor: '#cbd5e1',
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                    borderWidth: 1,
+                    padding: 10,
+                    callbacks: {
+                    label: function (context) {
+                    return formatCurrency(context.raw);
+                    }
+                    }
+                    }
+                    },
+                    scales: {
+                    y: {
+                    beginAtZero: true,
+                    grid: {
+                    color: 'rgba(255, 255, 255, 0.05)'
+                    },
+                    ticks: {
+                    color: '#94a3b8',
+                    callback: function (value) {
+                    return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumSignificantDigits:
+                    3 });
+                    }
+                    }
+                    },
+                    x: {
+                    grid: {
+                    display: false
+                    },
+                    ticks: {
+                    color: '#94a3b8'
+                    }
+                    }
+                    }
+                    }
+                    });
+
+                    // Generate Monthly List for Better Visualization
+                    atualizarListaMensal(fluxo, labels);
+                    };
+
+                    const atualizarListaMensal = (fluxo, labels) => {
+                    // Find or create container
+                    let listContainer = document.getElementById('lista-fluxo');
+                    if (!listContainer) {
+                    const chartWrapper = document.querySelector('.chart-wrapper');
+                    listContainer = document.createElement('div');
+                    listContainer.id = 'lista-fluxo';
+                    listContainer.style.marginTop = '20px';
+                    listContainer.style.display = 'grid';
+                    listContainer.style.gap = '10px';
+                    chartWrapper.appendChild(listContainer);
+                    }
+
+                    if (labels.length === 0) {
+                    listContainer.innerHTML = '';
+                    return;
+                    }
+
+                    listContainer.innerHTML = labels.map(mesAno => {
+                    const dados = fluxo[mesAno];
                     const [mes, ano] = mesAno.split('/');
-                    return {
+                    const nomeMes = `${MESES[mes]} ${ano}`;
+
+                    return `
+                    <div
+                        style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <div style="font-weight: 600; color: var(--text-primary);">${nomeMes}</div>
+                            <div style="font-size: 0.85rem; color: var(--text-muted);">${dados.qtd} pagamento${dados.qtd
+                                !== 1 ? 's' : ''}</div>
+                        </div>
+                        <div style="font-weight: 700; color: var(--accent-success);">${formatarMoeda(dados.total)}</div>
+                    </div>
+                    `;
+                    }).join('');
+                    };
+
+                    // ========================================
+                    // MODAL
+                    // ========================================
+                    const abrirModal = () => {
+                    document.getElementById('modal-overlay').classList.add('active');
+                    document.getElementById('form-pedido').reset();
+                    document.getElementById('data-emissao').valueAsDate = new Date();
+                    setTimeout(() => document.getElementById('numero-nota').focus(), 100);
+                    };
+
+                    const fecharModal = () => {
+                    document.getElementById('modal-overlay').classList.remove('active');
+                    };
+
+                    document.getElementById('modal-overlay').addEventListener('click', (e) => {
+                    if (e.target.id === 'modal-overlay') fecharModal();
+                    });
+
+                    document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') fecharModal();
+                    });
+
+                    // Filter Event Listeners
+                    document.getElementById('busca-input').addEventListener('input', aplicarFiltros);
+                    document.getElementById('data-inicio').addEventListener('change', aplicarFiltros);
+                    document.getElementById('data-fim').addEventListener('change', aplicarFiltros);
+                    document.getElementById('filtro-status').addEventListener('change', aplicarFiltros);
+
+                    // ========================================
+                    // MOBILE MENU
+                    // ========================================
+                    const toggleSidebar = () => {
+                    const sidebar = document.querySelector('.sidebar');
+                    const overlay = document.querySelector('.sidebar-overlay');
+                    sidebar.classList.toggle('active');
+                    overlay.classList.toggle('active');
+                    };
+
+                    // Close sidebar when clicking a nav item on mobile
+                    document.querySelectorAll('.nav-item').forEach(item => {
+                    item.addEventListener('click', () => {
+                    if (window.innerWidth <= 768) { toggleSidebar(); } }); });
+                        //========================================// CRUD OPERATIONS
+                        //========================================const salvarPedido=(event)=> {
+                        event.preventDefault();
+
+                        const pedido = {
+                        numeroNota: document.getElementById('numero-nota').value.trim(),
+                        cliente: document.getElementById('cliente').value.trim(),
+                        dataEmissao: document.getElementById('data-emissao').value,
+                        prazoPagamento: document.getElementById('prazo-pagamento').value.trim(), // Stored as text
+                        (e.g., "30/60")
+                        valorTotal: parseFloat(document.getElementById('valor-total').value),
+                        percentualComissao: parseFloat(document.getElementById('percentual-comissao').value)
+                        };
+
+                        const pedidos = carregarPedidos();
+
+                        if (pedidos.some(p => p.numeroNota === pedido.numeroNota)) {
+                        mostrarToast(`Nota ${pedido.numeroNota} já existe`, 'error');
+                        return;
+                        }
+
+                        pedidos.push(pedido);
+                        salvarPedidos(pedidos);
+                        atualizarInterface();
+                        fecharModal();
+                        mostrarToast('Pedido cadastrado com sucesso!', 'success');
+                        };
+
+                        const removerPedido = (numeroNota) => {
+                        if (!confirm(`Remover pedido ${numeroNota}?`)) return;
+
+                        const pedidos = carregarPedidos().filter(p => p.numeroNota !== numeroNota);
+                        salvarPedidos(pedidos);
+                        atualizarInterface();
+                        mostrarToast('Pedido removido', 'success');
+                        };
+
+                        // ========================================
+                        // EXPORT
+                        // ========================================
+                        const exportarExcel = () => {
+                        const pedidos = carregarPedidos();
+
+                        if (pedidos.length === 0) {
+                        mostrarToast('Não há pedidos para exportar', 'error');
+                        return;
+                        }
+
+                        const dadosPedidos = pedidos.map(p => {
+                        const comissao = p.valorTotal * p.percentualComissao / 100;
+                        const dataRecebimento = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
+
+                        return {
+                        'Nº Nota': p.numeroNota,
+                        'Cliente': p.cliente,
+                        'Data Emissão': new Date(p.dataEmissao + 'T00:00:00').toLocaleDateString('pt-BR'),
+                        'Valor Total': p.valorTotal,
+                        'Comissão (%)': p.percentualComissao,
+                        'Valor Comissão': comissao,
+                        'Prazo (dias)': p.prazoPagamento,
+                        'Data Recebimento': dataRecebimento.toLocaleDateString('pt-BR')
+                        };
+                        });
+
+                        const fluxo = {};
+                        pedidos.forEach(p => {
+                        const dataRecebimento = calcularDataRecebimento(p.dataEmissao, p.prazoPagamento);
+                        const mesAno = getMesAno(dataRecebimento);
+                        const comissao = p.valorTotal * p.percentualComissao / 100;
+                        if (!fluxo[mesAno]) fluxo[mesAno] = { total: 0, qtd: 0 };
+                        fluxo[mesAno].total += comissao;
+                        fluxo[mesAno].qtd++;
+                        });
+
+                        const dadosFluxo = Object.entries(fluxo)
+                        .sort(([a], [b]) => {
+                        const [mesA, anoA] = a.split('/');
+                        const [mesB, anoB] = b.split('/');
+                        return new Date(anoA, mesA - 1) - new Date(anoB, mesB - 1);
+                        })
+                        .map(([mesAno, dados]) => {
+                        const [mes, ano] = mesAno.split('/');
+                        return {
                         'Mês/Ano': `${MESES[mes]} ${ano}`,
                         'Qtd. Pedidos': dados.qtd,
                         'Total Comissões': dados.total
-                    };
-                });
+                        };
+                        });
 
-            const totalVendas = pedidos.reduce((sum, p) => sum + p.valorTotal, 0);
-            const totalComissoes = pedidos.reduce((sum, p) => sum + (p.valorTotal * p.percentualComissao / 100), 0);
+                        const totalVendas = pedidos.reduce((sum, p) => sum + p.valorTotal, 0);
+                        const totalComissoes = pedidos.reduce((sum, p) => sum + (p.valorTotal * p.percentualComissao /
+                        100), 0);
 
-            const dadosResumo = [
-                { 'Indicador': 'Total de Pedidos', 'Valor': pedidos.length },
-                { 'Indicador': 'Total em Vendas', 'Valor': totalVendas },
-                { 'Indicador': 'Total em Comissões', 'Valor': totalComissoes },
-                { 'Indicador': 'Ticket Médio', 'Valor': totalVendas / pedidos.length },
-                { 'Indicador': 'Comissão Média', 'Valor': totalComissoes / pedidos.length }
-            ];
+                        const dadosResumo = [
+                        { 'Indicador': 'Total de Pedidos', 'Valor': pedidos.length },
+                        { 'Indicador': 'Total em Vendas', 'Valor': totalVendas },
+                        { 'Indicador': 'Total em Comissões', 'Valor': totalComissoes },
+                        { 'Indicador': 'Ticket Médio', 'Valor': totalVendas / pedidos.length },
+                        { 'Indicador': 'Comissão Média', 'Valor': totalComissoes / pedidos.length }
+                        ];
 
-            const wb = XLSX.utils.book_new();
+                        const wb = XLSX.utils.book_new();
 
-            const wsPedidos = XLSX.utils.json_to_sheet(dadosPedidos);
-            wsPedidos['!cols'] = [
-                { wch: 12 }, { wch: 30 }, { wch: 14 }, { wch: 14 },
-                { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 16 }
-            ];
-            XLSX.utils.book_append_sheet(wb, wsPedidos, 'Pedidos');
+                        const wsPedidos = XLSX.utils.json_to_sheet(dadosPedidos);
+                        wsPedidos['!cols'] = [
+                        { wch: 12 }, { wch: 30 }, { wch: 14 }, { wch: 14 },
+                        { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 16 }
+                        ];
+                        XLSX.utils.book_append_sheet(wb, wsPedidos, 'Pedidos');
 
-            const wsFluxo = XLSX.utils.json_to_sheet(dadosFluxo);
-            wsFluxo['!cols'] = [{ wch: 18 }, { wch: 14 }, { wch: 16 }];
-            XLSX.utils.book_append_sheet(wb, wsFluxo, 'Fluxo de Caixa');
+                        const wsFluxo = XLSX.utils.json_to_sheet(dadosFluxo);
+                        wsFluxo['!cols'] = [{ wch: 18 }, { wch: 14 }, { wch: 16 }];
+                        XLSX.utils.book_append_sheet(wb, wsFluxo, 'Fluxo de Caixa');
 
-            const wsResumo = XLSX.utils.json_to_sheet(dadosResumo);
-            wsResumo['!cols'] = [{ wch: 22 }, { wch: 18 }];
-            XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
+                        const wsResumo = XLSX.utils.json_to_sheet(dadosResumo);
+                        wsResumo['!cols'] = [{ wch: 22 }, { wch: 18 }];
+                        XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
 
-            const hoje = new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
-            XLSX.writeFile(wb, `relatorio_${hoje}.xlsx`);
-            mostrarToast('Relatório exportado!', 'success');
-        };
+                        const hoje = new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
+                        XLSX.writeFile(wb, `relatorio_${hoje}.xlsx`);
+                        mostrarToast('Relatório exportado!', 'success');
+                        };
 
-        // ========================================
-        // TOAST
-        // ========================================
-        const mostrarToast = (mensagem, tipo = 'info') => {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = `toast ${tipo}`;
+                        // ========================================
+                        // TOAST
+                        // ========================================
+                        const mostrarToast = (mensagem, tipo = 'info') => {
+                        const container = document.getElementById('toast-container');
+                        const toast = document.createElement('div');
+                        toast.className = `toast ${tipo}`;
 
-            const icones = { success: '✅', error: '❌', info: 'ℹ️' };
-            toast.innerHTML = `
-                <span class="toast-icon">${icones[tipo]}</span>
-                <span class="toast-message">${mensagem}</span>
-            `;
+                        const icones = { success: '✅', error: '❌', info: 'ℹ️' };
+                        toast.innerHTML = `
+                        <span class="toast-icon">${icones[tipo]}</span>
+                        <span class="toast-message">${mensagem}</span>
+                        `;
 
-            container.appendChild(toast);
+                        container.appendChild(toast);
 
-            setTimeout(() => {
-                toast.classList.add('toast-hide');
-                setTimeout(() => toast.remove(), 400);
-            }, 3500);
-        };
+                        setTimeout(() => {
+                        toast.classList.add('toast-hide');
+                        setTimeout(() => toast.remove(), 400);
+                        }, 3500);
+                        };
 
-        // ========================================
-        // INIT
-        // ========================================
-        document.addEventListener('DOMContentLoaded', atualizarInterface);
+                        // ========================================
+                        // INIT
+                        // ========================================
+                        document.addEventListener('DOMContentLoaded', atualizarInterface);
 
-        // Register Service Worker for PWA
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js')
-                    .then(registration => {
+                        // Register Service Worker for PWA
+                        if ('serviceWorker' in navigator) {
+                        window.addEventListener('load', () => {
+                        navigator.serviceWorker.register('./sw.js')
+                        .then(registration => {
                         console.log('ServiceWorker registered:', registration.scope);
-                    })
-                    .catch(error => {
+                        })
+                        .catch(error => {
                         console.log('ServiceWorker registration failed:', error);
-                    });
-            });
-        }
-    </script>
+                        });
+                        });
+                        }
+                        </script>
 </body>
 
 </html>
